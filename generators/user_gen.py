@@ -2,22 +2,24 @@ import json
 import random
 import os
 from datetime import datetime, timedelta
-from parameters import INTERACTIONS, USER_TIME_SPENT # Source of truth
+from parameters import INTERACTIONS, USER_TIME_SPENT
 
-def generate_user_interactions(property_file, duration_hours=720):
-    with open(property_file, 'r') as f:
+
+def generate_user_interactions(feed_file, duration_hours=720):
+    with open(feed_file, 'r') as f:
         properties = json.load(f)
 
     interactions = []
     current_time = datetime.now() - timedelta(hours=duration_hours)
     end_time = datetime.now()
 
-    # User Persona
-    preferred_type = random.choice(["condo", "house", "apartment", "land"])
-    preferred_trans = random.choice(["rent", "buy"])
+    # USER PERSONA
+    preferred_type = random.choice(["condo", "house", "apartment", "land", "material", "construction"])
+    preferred_trans = random.choice(["rent", "buy", "none"])
 
     session_number = 0
 
+    # CENTROID
     sum_weighted_lat = 0.0
     sum_weighted_lng = 0.0
     total_interaction_weight = 0.0
@@ -32,69 +34,78 @@ def generate_user_interactions(property_file, duration_hours=720):
             seen_this_session = set()
 
             for _ in range(session_length):
-                # 1. DISTRACTION CHECK
-                is_distracted = random.random() < 0.15
 
-                if is_distracted:
-                    # Dwell factor decays on distraction
+                # DISTRACTION
+                if random.random() < 0.10:
                     activity_factor = max(0.0, activity_factor - 0.2)
                     current_time += timedelta(minutes=random.randint(1, 3))
                     continue
 
-                # 2. UNIQUE PROPERTY SELECTION
+                # UNIQUE SELECTION
                 candidates = [p for p in properties if p['id'] not in seen_this_session]
-                if not candidates: break
+                if not candidates:
+                    break
 
-                biased = [p for p in candidates if
-                          p['property_type'] == preferred_type and 
-                          p['transaction_type'] == preferred_trans]
-
+                biased = [
+                    p for p in candidates
+                    if p['property_type'] == preferred_type and
+                       p['transaction_type'] == preferred_trans
+                ]
 
                 pool = biased if (biased and random.random() < 0.7) else candidates
                 prop = random.choice(pool)
                 seen_this_session.add(prop['id'])
 
-                # 3. INTERACTION LOGIC
+                # INTERACTION
                 roll = random.random()
                 chosen_actions = ["view"]
-                if roll < 0.45: chosen_actions.append("click")
-                if roll < 0.18: chosen_actions.append("like")
+
+                if roll < 0.45:
+                    chosen_actions.append("click")
+                if roll < 0.18:
+                    chosen_actions.append("like")
                 if roll < 0.05:
                     chosen_actions.append("share")
-                    if "like" not in chosen_actions: chosen_actions.append("like")
+                    if "like" not in chosen_actions:
+                        chosen_actions.append("like")
 
                 unique_actions = list(set(chosen_actions))
                 total_weight = sum(INTERACTIONS[a]["weight"] for a in unique_actions)
 
-                sum_weighted_lat += (prop['lat'] * total_weight)
-                sum_weighted_lng += (prop['lng'] * total_weight)
+                # CENTROID UPDATE
+                sum_weighted_lat += prop["lat"] * total_weight
+                sum_weighted_lng += prop["lng"] * total_weight
                 total_interaction_weight += total_weight
 
-                # 4. ACTIVITY FACTOR MATH (The "Flow" logic)
-                # Base increment + bonus for high-intensity actions
-                activity_boost = total_weight / 50.0 # Scale weight to a small float
-                activity_factor += (0.1 + activity_boost) 
+                # ACTIVITY FACTOR
+                activity_boost = total_weight / 50.0
+                activity_factor += (0.1 + activity_boost)
 
-                # Determine Dwell Time
-                # We use the highest-tier action's range for realism
-                max_action = unique_actions[-1]
+                # DWELL
+                max_action = max(unique_actions, key=lambda a: INTERACTIONS[a]["weight"])
                 actual_dwell = random.randint(*INTERACTIONS[max_action]['dwell_range'])
 
-                # 5. LOG ENTRY
+                # LOG
                 interaction = {
                     "session_number": session_number,
                     "timestamp": current_time.isoformat(),
                     "listing_id": prop['id'],
+
+                    # raw behavior
                     "action": unique_actions,
                     "weight": total_weight,
                     "dwell_time_sec": actual_dwell,
                     "activity_factor": round(activity_factor, 2),
-                    "is_distracted": False, # We only log the successful interactions here
+                    "is_distracted": False,
+
+                    # minimal context (NO feature engineering)
                     "prop_lat": prop['lat'],
                     "prop_lng": prop['lng'],
                     "property_type": prop['property_type'],
-                    "transaction_type": prop['transaction_type']
+                    "transaction_type": prop['transaction_type'],
+                    "category": prop.get("category", "unknown")
                 }
+
                 interactions.append(interaction)
 
                 current_time += timedelta(seconds=actual_dwell + random.randint(5, 15))
@@ -103,13 +114,12 @@ def generate_user_interactions(property_file, duration_hours=720):
 
         current_time += timedelta(minutes=15)
 
-    os.makedirs('./data', exist_ok=True)
-
+    # FINAL CENTROID
     if total_interaction_weight > 0:
         final_target_lat = sum_weighted_lat / total_interaction_weight
         final_target_lng = sum_weighted_lng / total_interaction_weight
     else:
-        # Fallback to a neutral center if the user never interacted
+        # Default fallback
         final_target_lat = 21.95
         final_target_lng = 96.05
 
@@ -125,10 +135,13 @@ def generate_user_interactions(property_file, duration_hours=720):
         "interactions": interactions
     }
 
+    os.makedirs('./data', exist_ok=True)
+
     with open('./data/user_interaction_log.json', 'w') as f:
         json.dump(final_output, f, indent=2)
 
     print(f"Generated {len(interactions)} interactions across {session_number} sessions.")
 
+
 if __name__ == "__main__":
-    generate_user_interactions('./data/dummy_listings.json', duration_hours=USER_TIME_SPENT)
+    generate_user_interactions('./data/dummy_feed.json', duration_hours=USER_TIME_SPENT)
